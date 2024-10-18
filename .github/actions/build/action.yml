@@ -27,7 +27,7 @@ inputs:
 runs:
   using: composite
   steps:
-# Android only
+    # Android-specific setup
     - name: Android - Set up Java 17
       uses: actions/setup-java@v4
       if: ${{ inputs.platform == 'android' }}
@@ -35,86 +35,104 @@ runs:
         distribution: temurin
         java-version: 17
 
-    - name: Android - Remove existing Android SDK, and set up ENV vars
-      if: ${{ inputs.platform == 'android' }}
-      shell: sh
-      run: |
-        sudo rm -r /usr/local/lib/android/sdk/**
-        export ANDROID_HOME=/usr/local/lib/android/sdk
-        export ANDROID_SDK_ROOT=$ANDROID_HOME
-        export ANDROID_NDK_VERSION=23.2.8568313
-        export ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}
-        echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-        echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
-        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT" >> "$GITHUB_ENV"
-
-    - name: Android - Set up Android SDK
-      if: ${{ inputs.platform == 'android' }}
-      uses: android-actions/setup-android@v3
-      with:
-        packages: "ndk;${{ env.ANDROID_NDK_VERSION }} cmdline-tools;latest build-tools;34.0.0 platforms;android-34 cmake;3.22.1"
-# Linux only
+    # Linux-specific dependencies
     - name: Linux - dependencies
       if: ${{ inputs.platform == 'linux' }}
       shell: sh
       run: |
         sudo apt-get update -qq
         sudo apt-get install -qqq build-essential pkg-config
-# Web only
+
+    # Web-specific Emscripten setup
     - name: Web - Set up Emscripten latest
       if: ${{ inputs.platform == 'web' }}
       uses: mymindstorm/setup-emsdk@v13
       with:
         version: ${{ inputs.em_version }}
         actions-cache-folder: ${{ inputs.em_cache_folder }}.${{ inputs.float-precision }}.${{ inputs.build-target-type }}
-    - name: Web - Verify Emscripten setup
-      if: ${{ inputs.platform == 'web' }}
-      shell: sh
-      run: |
-        emcc -v
-# Windows only
-    - name: Windows - Setup MinGW for Windows/MinGW build
-      uses: egor-tensin/setup-mingw@v2
+
+      # Download FFmpeg for Windows
+    - name: Download FFmpeg for Windows
+      uses: suisei-cn/actions-download-file@v1
       if: ${{ inputs.platform == 'windows' }}
       with:
-        version: 12.2.0
-# Dependencies of godot
-    # Use python 3.x release (works cross platform)
-    - name: Set up Python 3.x
-      uses: actions/setup-python@v5
+        url: "https://github.com/EIRTeam/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-godot.tar.xz"
+        target: .
+
+    # Download FFmpeg for Linux
+    - name: Download FFmpeg for Linux
+      uses: suisei-cn/actions-download-file@v1
+      if: ${{ inputs.platform == 'linux' }}
       with:
-        # Semantic version range syntax or exact version of a Python version
-        python-version: "3.x"
-        # Optional - x64 or x86 architecture, defaults to x64
-        architecture: "x64"
-    - name: Setup scons
-      shell: bash
-      run: |
-        python -c "import sys; print(sys.version)"
-        python -m pip install scons==4.4.0
-        scons --version
-# Build
-    - name: Cache .scons_cache
-      uses: actions/cache@v4
+        url: "https://github.com/EIRTeam/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl-godot.tar.xz"
+        target: .
+
+    # Extract FFmpeg tarball for Windows
+    - name: Extract FFmpeg for Windows
+      uses: ihiroky/extract-action@v1
+      if: ${{ inputs.platform == 'windows' }}
       with:
-        path: |
-          ${{ github.workspace }}/${{ inputs.gdextension-location }}/${{ inputs.scons-cache }}/
-          ${{ github.workspace }}/${{ inputs.godot-cpp }}/${{ inputs.scons-cache }}/
-        key: ${{ inputs.platform }}_${{ inputs.arch }}_${{ inputs.float-precision }}_${{ inputs.build-target-type }}_cache
-# Build godot-cpp
-    - name: Build godot-cpp Debug Build
-      shell: sh
-      env:
-        SCONS_CACHE: ${{ github.workspace }}/${{ inputs.godot-cpp }}/${{ inputs.scons-cache }}/
-      run: |
-        scons target=${{ inputs.build-target-type }} platform=${{ inputs.platform }} arch=${{ inputs.arch }} generate_bindings=yes precision=${{ inputs.float-precision }}
-      working-directory: ${{ inputs.godot-cpp }}
-# Build gdextension
+        file_path: ffmpeg-master-latest-win64-lgpl-godot.tar.xz
+        extract_dir: .
+
+    # Extract FFmpeg tarball for Linux
+    - name: Extract FFmpeg for Linux
+      uses: ihiroky/extract-action@v1
+      if: ${{ inputs.platform == 'linux' }}
+      with:
+        file_path: ffmpeg-master-latest-linux64-lgpl-godot.tar.xz
+        extract_dir: .
+
+    # Compilation step for Windows
+    - name: Compilation for Windows
+      uses: ./.github/actions/build
+      if: ${{ inputs.platform == 'windows' }}
+      with:
+        sconsflags: ${{ env.SCONSFLAGS }} ${{ matrix.sconsflags }}
+        ffmpeg-path: "../ffmpeg-master-latest-win64-lgpl-godot/"
+        platform: windows
+        target: ${{ matrix.target }}
+        tests: ${{ matrix.tests }}
+
+    # Compilation step for Linux
+    - name: Compilation for Linux
+      uses: ./.github/actions/build
+      if: ${{ inputs.platform == 'linux' }}
+      with:
+        sconsflags: ${{ env.SCONSFLAGS }} ${{ matrix.sconsflags }}
+        ffmpeg-path: "../ffmpeg-master-latest-linux64-lgpl-godot/"
+        platform: linux
+        target: ${{ matrix.target }}
+        tests: ${{ matrix.tests }}
+
+    # Build gdextension
     - name: Build GDExtension Debug Build
       shell: sh
       env:
-        SCONS_CACHE: ${{ github.workspace }}/${{ inputs.gdextension-location }}/${{ inputs.scons-cache }}/
+        SCONS_CACHE: ${{ inputs.scons-cache }}
       run: |
         scons target=${{ inputs.build-target-type }} platform=${{ inputs.platform }} arch=${{ inputs.arch }} precision=${{ inputs.float-precision }}
-      working-directory: ${{ inputs.gdextension-location }}
+      working-directory: gdextension_build
+
+    # Prepare artifact for Windows
+    - name: Prepare artifact for Windows
+      shell: sh
+      run: |
+        Remove-Item gdextension_build/build/addons/ffmpeg/* -Include *.exp,*.lib,*.pdb -Force
+      if: ${{ inputs.platform == 'windows' }}
+
+    # Upload artifact for Windows
+    - name: Upload artifact for Windows
+      uses: ./.github/actions/upload-artifact
+      if: ${{ inputs.platform == 'windows' }}
+      with:
+        name: artifacts
+        path: ./gdextension_build/build/*
+
+    # Upload artifact for Linux
+    - name: Upload artifact for Linux
+      uses: ./.github/actions/upload-artifact
+      if: ${{ inputs.platform == 'linux' }}
+      with:
+        name: artifacts
+        path: ./gdextension_build/build/*
